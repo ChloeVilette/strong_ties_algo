@@ -1,0 +1,77 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+# model-based function
+
+```{r}
+
+model_based_strong_ties <- function(weights, sd_diff = 0 , min_diff=0){
+  
+  #sort weights
+  weights <- sort(weights)
+  
+  #store outputs
+  df_models <- data.frame()
+  
+  #start off (model has to beat this)
+  max_density = -999999
+  
+  #check for evidence of skewness
+  fit.normal <- suppressWarnings(brm(weights~1, data=data.frame(weights=weights)  , cores=4, prior=c(prior("normal(1,1)", class="Intercept", lb = 0) ,prior("normal(0,1)",class="sigma")), verbose=0, refresh=0 ))
+  fit.skew <- suppressWarnings(brm(weights~1, data=data.frame(weights=weights), family = skew_normal() , cores=4, prior=c(prior("normal(1,2)", class="Intercept", lb = 0) ,prior("normal(0,10)",class="sigma"), prior("normal(0,4)",class="alpha",lb=0)), verbose=0, refresh=0 ))
+  loo_res<-loo_compare(loo(fit.skew),loo(fit.normal) )
+  
+  if(rownames(loo_res)[1]=="fit.skew" & (loo_res[2,1] + sd_diff*loo_res[2,2] < 0 ) & (loo_res[2,1]<=(-min_diff))  ){  # makes it more conservative
+    
+    #loop through and try different strong tie options (#start with largest weight then work backwards)
+    
+    for (s in 0:round(length(weights)/2) ){
+      if(s==0){
+        my_priors<-get_prior( bf(weight~1 ) , data=data.frame(weight=(weights)), family = "poisson" )
+        fit.skew2 <- suppressWarnings( brm(bf(weight~1), data=data.frame(weight=(weights)), family = "poisson", prior=my_priors, cores=4, verbose=0, refresh=0) )
+        weight_labels <- rep(0,length(weights))
+        loo_labels = suppressWarnings(loo(fit.skew2))
+
+      } else {
+        
+        #what weights to set as strong ties
+        
+        l=length(weights)-s #top weight
+        weight_labels<-c(rep(0,l),seq(1,s,by=1) )
+        #fit a skewed normal
+        my_priors<-get_prior( bf(weight~as.factor(label) ) , data=data.frame(weight=(weights),label=weight_labels), family = "poisson" )
+        my_priors[1,1] <- "normal(0,1)"
+        fit.skew2 <- suppressWarnings( brm(bf(weight~as.factor(label) ), data=data.frame(weight=(weights),label=weight_labels), family = "poisson", prior=my_priors, cores=4, verbose=0, refresh=0) )
+        loo_labels = suppressWarnings(loo(fit.skew2))
+  
+      }
+      #extract the loo
+      loo_labels = suppressWarnings(loo(fit.skew2))
+      
+      #if the model beats the last model save it as the best
+      
+      if(loo_labels$estimates[1,1]>max_density& loo_labels$estimates[1,1]-max_density > min_diff ){ #makes it more conservative: 
+        fit_save = fit.skew2
+        label_save = weight_labels
+        max_density=loo_labels$estimates[1,1]
+        
+        #save all the results
+        df_models <-  dplyr::bind_rows(df_models, data.frame(strongTies = s, elpd = loo_labels$estimates[1,1], looic = loo_labels$estimates[3,1]))
+    
+      } else {
+        df_models <-  dplyr::bind_rows(df_models, data.frame(strongTies = s, elpd = loo_labels$estimates[1,1], looic = loo_labels$estimates[3,1]))
+        break
+      }
+    }
+
+    return( data.frame(weight=weights, strong = as.numeric(label_save>0) )) 
+  } else {
+
+    return(data.frame(weight=weights, strong = rep(0, length(weights)))) 
+  }
+}
+
+```
+
